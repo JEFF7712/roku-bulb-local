@@ -1,0 +1,7 @@
+*.pcap
+*.pcapng
+*.log
+captures/*.txt
+roku_api.jsonl
+mitmdump.log
+bulbs.yaml

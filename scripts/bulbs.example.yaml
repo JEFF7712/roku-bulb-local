@@ -1,0 +1,6 @@
+# Copy to bulbs.yaml (gitignored, holds enr secrets). Never commit bulbs.yaml.
+bulbs:
+  - name: Desk Lamp
+    mac: 7C67ABAABBCC
+    ip: 192.168.1.50
+    enr: PASTE_FROM_CAPTURE
