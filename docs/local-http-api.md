@@ -85,11 +85,15 @@ Crucially, regarding ESP-MDF Mlink headers and ports:
 To systematically probe whether the bulb firmware's port 88 implementation supports returning encrypted state, use `scripts/probe_status.py`:
 
 ```bash
-BULB_ENR=<enr> python3 scripts/probe_status.py <ip> <mac> --listen-udp 10 --interactive --restore-brightness 45
+BULB_ENR=<enr> python3 scripts/probe_status.py <ip> <mac> \
+  --listen-udp 10 \
+  --interactive \
+  --restore-power off \
+  --restore-brightness 45
 ```
 
 This script executes a 5-step controlled experiment:
-1. **Positive control**: Executes an observable brightness step (`P3=1, P1501=50`), measures exact latency, verifies HTTP 200, optionally prompts for visual operator confirmation, and restores initial brightness when finished.
+1. **Positive control**: Executes an observable brightness step (`P3=1, P1501=50`), measures exact latency, verifies HTTP 200, optionally prompts for visual operator confirmation, and restores initial power/brightness states (`--restore-power`, `--restore-brightness`) when finished.
 2. **Full 6-way header isolation**: Evaluates all combinations of `Root-Response` (omitted, `"0"`, `"1"`) x `Mesh-Node-Mac` (omitted, `<mac>`) while holding payload constant.
 3. **Encrypted reads & schemas**: Evaluates encrypted `plist`, wildcard `plist: []`, ESP-MDF CID schemas `{"request":"get_status","cids":[0,1,2]}`, and `get_device_info`.
 4. **Passive LAN event listener & capture**: Pre-flight loopback validates and listens on UDP port 3232 (status broadcasts), 1025 (discovery), and 22223.

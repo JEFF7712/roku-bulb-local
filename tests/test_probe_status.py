@@ -122,18 +122,32 @@ def test_run_experiment_persists_sanitized_results(mock_sleep, mock_send_probe, 
         "10.0.20.117",
         DUMMY_MAC,
         DUMMY_ENR,
-        listen_udp_seconds=0.0,
+        listen_udp_seconds=0.1,
         output_path=output_file,
+        restore_brightness=45,
+        restore_power="off",
     )
     assert len(results) >= 12
     assert os.path.exists(output_file)
 
     with open(output_file) as f:
         lines = [json.loads(line) for line in f]
-    assert len(lines) == len(results)
-    for entry in lines:
+    # Check that probe lines plus the udp_capture_summary record are present
+    assert len(lines) >= len(results)
+    probe_entries = [e for e in lines if "request_body" in e]
+    for entry in probe_entries:
         if "characteristics" in entry["request_body"]:
             assert entry["request_body"]["characteristics"] == "***REDACTED_CIPHERTEXT***"
+    udp_entries = [e for e in lines if e.get("record_type") == "udp_capture_summary"]
+    assert len(udp_entries) == 1
+
+    # Verify that the restore command was dispatched (with both P3=0 and P1501=45)
+    restore_call = mock_send_probe.call_args_list[-1]
+    restore_body = restore_call[0][1]
+    assert restore_body["request"] == "set_status"
+    decrypted_restore = decrypt_response(DUMMY_ENR, restore_body["characteristics"])
+    restore_json = json.loads(decrypted_restore)
+    assert restore_json["plist"] == [{"pid": "P3", "pvalue": "0"}, {"pid": "P1501", "pvalue": "45"}]
 
 
 def test_udp_listener_loopback_self_test():

@@ -359,12 +359,18 @@ def start_udp_listener(
     return t, bind_success[0]
 
 
-def sanitize_record(record: dict[str, Any]) -> dict[str, Any]:
+def sanitize_record(record: dict[str, Any], redact_mac: bool = False) -> dict[str, Any]:
     """Redact keys, credentials, and sensitive tokens from record."""
     sanitized = json.loads(json.dumps(record))
     if "request_body" in sanitized and isinstance(sanitized["request_body"], dict):
         if "characteristics" in sanitized["request_body"]:
             sanitized["request_body"]["characteristics"] = "***REDACTED_CIPHERTEXT***"
+    if redact_mac:
+        if "headers" in sanitized and "Mesh-Node-Mac" in sanitized["headers"]:
+            sanitized["headers"]["Mesh-Node-Mac"] = "***REDACTED_MAC***"
+        if "request_body" in sanitized and isinstance(sanitized["request_body"], dict):
+            if "mac" in sanitized["request_body"]:
+                sanitized["request_body"]["mac"] = "***REDACTED_MAC***"
     return sanitized
 
 
@@ -376,6 +382,7 @@ def run_experiment(
     output_path: str = DEFAULT_OUTPUT_JSONL,
     interactive: bool = False,
     restore_brightness: int | None = None,
+    restore_power: str | None = None,
 ) -> list[dict[str, Any]]:
     """Execute the controlled 5-stage experiment with sanitized persistence."""
     tests = build_controlled_experiment_matrix(mac, enr)
@@ -498,9 +505,16 @@ def run_experiment(
 
         time.sleep(1.0)
 
-    # Optional restoration of positive control brightness
+    # Optional restoration of positive control settings (power and/or brightness)
+    restore_plist = []
+    if restore_power is not None:
+        p_val = "1" if restore_power.lower() in ("on", "1", "true") else "0"
+        restore_plist.append({"pid": "P3", "pvalue": p_val})
     if restore_brightness is not None:
-        print(f"\nRestoring positive control brightness to {restore_brightness}...")
+        restore_plist.append({"pid": "P1501", "pvalue": str(restore_brightness)})
+
+    if restore_plist:
+        print(f"\nRestoring positive control settings ({restore_plist})...")
         restore_body = {
             "isSendQueue": 0,
             "request": "set_status",
@@ -510,13 +524,13 @@ def run_experiment(
                     "mac": mac,
                     "index": "0",
                     "ts": str(int(time.time() * 1000)),
-                    "plist": [{"pid": "P1501", "pvalue": str(restore_brightness)}],
+                    "plist": restore_plist,
                 },
             ),
         }
         try:
             send_probe(ip, restore_body, {"Content-Type": "application/json", "Mesh-Node-Mac": mac})
-            print("    -> Restore command dispatched.")
+            print("    -> Restore command dispatched successfully.")
         except Exception as e:
             print(f"    -> Restore failed: {e}")
 
@@ -529,6 +543,20 @@ def run_experiment(
         # Filter out local loopback self-test packets
         external_packets = [p for p in udp_packets if p.get("sender") != "127.0.0.1"]
         print(f"Stage 4 Total external UDP broadcast packets captured: {len(external_packets)}")
+
+        udp_summary_record = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "record_type": "udp_capture_summary",
+            "stage": 4,
+            "ports_monitored": [MLINK_STATUS_BROADCAST_PORT, MLINK_DISCOVERY_PORT, FACTORY_UDP_PORT],
+            "total_captured": len(external_packets),
+            "packets": external_packets,
+        }
+        try:
+            with open(output_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(udp_summary_record) + "\n")
+        except Exception as write_err:
+            print(f"    [Warning] Failed to write UDP log: {write_err}")
 
     print(f"\n=== Experiment Summary Table (Saved to {output_path}) ===")
     print(f"{'Idx':<4} {'Stage':<6} {'Classification':<36} {'Test Name'}")
@@ -563,6 +591,12 @@ def main() -> int:
         help="Restore bulb brightness to this percentage after testing",
     )
     parser.add_argument(
+        "--restore-power",
+        choices=["on", "off"],
+        default=None,
+        help="Restore bulb power state ('on' or 'off') after testing",
+    )
+    parser.add_argument(
         "--output",
         default=DEFAULT_OUTPUT_JSONL,
         help=f"Path to write structured JSONL results (default: {DEFAULT_OUTPUT_JSONL})",
@@ -582,6 +616,7 @@ def main() -> int:
         output_path=args.output,
         interactive=args.interactive,
         restore_brightness=args.restore_brightness,
+        restore_power=args.restore_power,
     )
     return 0
 
