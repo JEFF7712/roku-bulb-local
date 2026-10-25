@@ -120,12 +120,18 @@ Tested against live bulb `10.0.20.117` (BC1000X / RK_BA19C, fw `1.1.1.15`):
 | 13 | 3 | `unencrypted_get_device_info` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 129.5 ms |
 | — | 4 | `udp_capture_summary` (ports 3232, 1025, 22223) | **0 packets captured** | 10.0 s |
 
-**Findings & Takeaways**:
-- The server remained completely stable: 0 timeouts, 0 connection drops, 0 crashes.
-- Response latencies for reads (`get_status` / `get_device_info`) were consistently ~110–150 ms, whereas write commands (`set_status`) took ~680 ms due to hardware LED PWM transitions.
-- Every read query returned `HTTP 200 OK` with `Transfer-Encoding: chunked` and 0-byte body across all 6 header permutations and payload variations.
-- No local UDP notifications were broadcast to port 3232 during or after commands.
-- **Architectural Conclusion**: Port 88 on stock Roku BC1000X firmware acts purely as an asymmetric, one-way command sink. For the Home Assistant integration, optimistic MQTT state reporting remains the optimal local architecture, avoiding polling overhead while providing instantaneous response.
+**Findings & Observations**:
+- **Stability**: The HTTP server remained completely stable throughout: 0 timeouts, 0 connection drops, 0 crashes.
+- **Latency**: Read requests (`get_status` / `get_device_info`) completed consistently in ~110–150 ms, while write commands (`set_status`) completed in ~680 ms.
+- **Empty HTTP Responses**: Every evaluated read query returned `HTTP 200 OK` with `Transfer-Encoding: chunked` and a 0-byte body across all six `Root-Response` / `Mesh-Node-Mac` header permutations and payload variations.
+- **UDP Broadcast Scope**: The loopback self-tests verified that local sockets were bound and listening on ports 3232, 1025, and 22223. During this run and the 10-second post-test window, no external UDP packets were received on these ports.
+- **Run Conditions**: In this scripted execution, `--interactive` was omitted (recording `COMMAND_ACCEPTED_HTTP_200` without visual confirmation of bulb state change), and `--restore-power` was omitted, exercising the brightness restoration path (`P1501=45`).
+
+### Conclusion & Design Decisions
+
+On the tested Roku BC1000X / RK_BA19C running firmware 1.1.1.15, all evaluated `get_status` and `get_device_info` request variants returned empty HTTP responses. No UDP notifications were observed on the monitored ports during the experiment. These results suggest that the stock firmware does not expose state feedback through the tested local interfaces.
+
+Consequently, the Home Assistant MQTT bridge currently uses optimistic state reporting. This provides practical cloud-independent control while acknowledging that changes originating outside the bridge may not be reflected in Home Assistant.
 
 
 
