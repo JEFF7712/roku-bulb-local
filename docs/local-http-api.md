@@ -62,3 +62,36 @@ Wyze login will not list it. Retrieval path:
 
 No `hap upgrade` or factory cycling until the local path is exhausted. It gives
 LAN control with stock firmware and zero flash risk.
+
+## State synchronization & `get_status` investigation
+
+### Background & Architecture
+
+In testing and network captures (`captures/roku_api.jsonl`), local state queries (`get_status`) have historically returned empty responses (`HTTP/1.1 200 OK` with 0-byte chunked body). Analyzing the protocol origins and app traffic reveals why:
+
+1. **ESP-MDF Mlink Foundation**: The port 88 HTTP server is derived from Espressif's ESP-MDF (Mesh Development Framework) `mlink_httpd` module, adapted by Wyze/Roku with an AES-128-CBC encryption envelope.
+2. **App Traffic Pattern**: The official Roku Smart Home App treats port 88 exclusively as a **write-only / fire-and-forget control fast-path** (`request: "set_status"`). The app **never** sends `get_status` requests to port 88 over the local network.
+3. **Cloud-Tethered State**: State updates in the official app are handled entirely through cloud polling (`POST https://api.wyzeiot.com:443/app/v2/device_list/get_property_list` every 30 seconds) and push notifications via WebSocket connections (`aspen-sockets.production.aspen.rokuapi.net:443/v1/socket`). The bulb firmware itself pushes its state upstream to the cloud via its background MQTT connection upon physical or remote state changes.
+
+### Probing Encrypted `get_status`
+
+Initial unencrypted probes like `POST {"request":"get_status","isSendQueue":0}` returned empty bodies because `/device_request` discards malformed or empty payloads without an error response (returning 200 with 0 bytes).
+
+Crucially, regarding ESP-MDF Mlink headers:
+- `Mesh-Node-Num` is a server enumeration header, not a mandatory request header.
+- In `mlink_httpd.c`, `Root-Response: 1` sets `httpd_data->type.resp = false`, which **suppresses** standard device response payloads. Omitting the header or passing `Root-Response: 0` keeps `resp = true`.
+
+To systematically probe whether the bulb firmware's port 88 implementation supports returning encrypted state, use `scripts/probe_status.py`:
+
+```bash
+BULB_ENR=<enr> python3 scripts/probe_status.py <ip> <mac> [--listen-udp 5]
+```
+
+This script executes a 5-step controlled experiment:
+1. **Positive control**: Verifies `set_status` connectivity and records exact request/response bytes.
+2. **Header isolation**: Compares `Root-Response` (omitted, `"0"`, `"1"`) and `Mesh-Node-Mac`.
+3. **Encrypted reads & schemas**: Evaluates encrypted `plist`, wildcard `plist: []`, ESP-MDF CID schemas `{"request":"get_status","cids":[0,1,2]}`, and `get_device_info`.
+4. **Passive LAN event listener**: Listens for UDP broadcasts on port 1025 (`mlink_notice`) and port 22223.
+5. **Result classification**: Categorizes empty replies, timeouts, errors, or actual state payloads.
+
+
