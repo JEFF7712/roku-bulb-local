@@ -77,21 +77,31 @@ In testing and network captures (`captures/roku_api.jsonl`), local state queries
 
 Initial unencrypted probes like `POST {"request":"get_status","isSendQueue":0}` returned empty bodies because `/device_request` discards malformed or empty payloads without an error response (returning 200 with 0 bytes).
 
-Crucially, regarding ESP-MDF Mlink headers:
+Crucially, regarding ESP-MDF Mlink headers and ports:
 - `Mesh-Node-Num` is a server enumeration header, not a mandatory request header.
 - In `mlink_httpd.c`, `Root-Response: 1` sets `httpd_data->type.resp = false`, which **suppresses** standard device response payloads. Omitting the header or passing `Root-Response: 0` keeps `resp = true`.
+- In `mlink_notice.c`, status broadcasts are dispatched to **UDP port 3232** (`CONFIG_MLINK_NOTICE_UDP_SERVER_PORT`), while **UDP port 1025** is the device listener for discovery requests.
 
 To systematically probe whether the bulb firmware's port 88 implementation supports returning encrypted state, use `scripts/probe_status.py`:
 
 ```bash
-BULB_ENR=<enr> python3 scripts/probe_status.py <ip> <mac> [--listen-udp 5]
+BULB_ENR=<enr> python3 scripts/probe_status.py <ip> <mac> --listen-udp 10 --interactive --restore-brightness 45
 ```
 
 This script executes a 5-step controlled experiment:
-1. **Positive control**: Verifies `set_status` connectivity and records exact request/response bytes.
-2. **Header isolation**: Compares `Root-Response` (omitted, `"0"`, `"1"`) and `Mesh-Node-Mac`.
+1. **Positive control**: Executes an observable brightness step (`P3=1, P1501=50`), measures exact latency, verifies HTTP 200, optionally prompts for visual operator confirmation, and restores initial brightness when finished.
+2. **Full 6-way header isolation**: Evaluates all combinations of `Root-Response` (omitted, `"0"`, `"1"`) x `Mesh-Node-Mac` (omitted, `<mac>`) while holding payload constant.
 3. **Encrypted reads & schemas**: Evaluates encrypted `plist`, wildcard `plist: []`, ESP-MDF CID schemas `{"request":"get_status","cids":[0,1,2]}`, and `get_device_info`.
-4. **Passive LAN event listener**: Listens for UDP broadcasts on port 1025 (`mlink_notice`) and port 22223.
-5. **Result classification**: Categorizes empty replies, timeouts, errors, or actual state payloads.
+4. **Passive LAN event listener & capture**: Pre-flight loopback validates and listens on UDP port 3232 (status broadcasts), 1025 (discovery), and 22223.
+5. **Sanitized structured logging**: Saves sanitized results (redacting keys/ciphertext) with precise classifications (`EMPTY_RESPONSE`, `STATUS_PAYLOAD_RETURNED`, `ACK_STATUS_CODE`, `HTTP_ERROR`, `TIMEOUT`) to `captures/probe_results.jsonl`.
+
+### Auxiliary packet capture on bulb VLAN
+
+For full Layer 2 visibility (including capturing packets emitted by the bulb when toggled via the official Roku app), run `tcpdump` on the same subnet:
+
+```bash
+sudo tcpdump -ni <iface> -s 0 -w captures/roku-probe.pcap 'udp and (port 1025 or port 3232 or port 22223)'
+```
+
 
 

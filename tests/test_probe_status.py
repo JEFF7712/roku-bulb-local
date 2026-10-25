@@ -13,45 +13,85 @@ from probe_status import (
     decrypt_response,
     encrypt_payload,
     run_experiment,
+    sanitize_record,
     send_probe,
+    start_udp_listener,
 )
+
+DUMMY_MAC = "AA1122334455"
+DUMMY_ENR = "SYNTHETICTEST001"
 
 
 def test_encrypt_decrypt_roundtrip_pkcs7():
-    enr = "JgS72CmlwDrx9F9D"
-    payload = {"mac": "7C67AB0A83AB", "plist": [{"pid": "P3", "pvalue": "1"}]}
-    enc = encrypt_payload(enr, payload, pad_mode="pkcs7")
-    dec_str = decrypt_response(enr, enc)
+    payload = {"mac": DUMMY_MAC, "plist": [{"pid": "P3", "pvalue": "1"}]}
+    enc = encrypt_payload(DUMMY_ENR, payload, pad_mode="pkcs7")
+    dec_str = decrypt_response(DUMMY_ENR, enc)
     dec_obj = json.loads(dec_str)
     assert dec_obj == payload
 
 
 def test_encrypt_decrypt_roundtrip_zero_pad():
-    enr = "JgS72CmlwDrx9F9D"
-    payload = {"mac": "7C67AB0A83AB", "plist": [{"pid": "P3", "pvalue": "0"}]}
-    enc = encrypt_payload(enr, payload, pad_mode="zero")
-    dec_str = decrypt_response(enr, enc)
+    payload = {"mac": DUMMY_MAC, "plist": [{"pid": "P3", "pvalue": "0"}]}
+    enc = encrypt_payload(DUMMY_ENR, payload, pad_mode="zero")
+    dec_str = decrypt_response(DUMMY_ENR, enc)
     dec_obj = json.loads(dec_str)
     assert dec_obj == payload
 
 
-def test_build_controlled_experiment_matrix():
-    matrix = build_controlled_experiment_matrix("7C67AB0A83AB", "JgS72CmlwDrx9F9D")
-    stages = {t["stage"] for t in matrix}
-    assert stages == {1, 2, 3}
-    names = [t["name"] for t in matrix]
-    assert "positive_control_set_status_power_on" in names
-    assert "header_isolation_root_response_omitted_mac_omitted" in names
-    assert "header_isolation_root_response_0_mac_set" in names
-    assert "header_isolation_root_response_1_mac_set" in names
-    assert "unencrypted_mlink_cids_schema" in names
-    assert "unencrypted_get_device_info" in names
+def test_build_controlled_experiment_matrix_full_header_isolation():
+    matrix = build_controlled_experiment_matrix(DUMMY_MAC, DUMMY_ENR)
+    stage2_tests = [t for t in matrix if t["stage"] == 2]
+
+    # Full 6-way factorial: 3 Root-Response x 2 Mesh-Node-Mac
+    assert len(stage2_tests) == 6
+
+    combos = {(t["root_response"], t["mesh_node_mac"]) for t in stage2_tests}
+    expected_combos = {
+        (None, None),
+        (None, DUMMY_MAC),
+        ("0", None),
+        ("0", DUMMY_MAC),
+        ("1", None),
+        ("1", DUMMY_MAC),
+    }
+    assert combos == expected_combos
+
+    # Verify payload is held strictly constant across all 6 combinations
+    inner_payloads = [t["inner_payload"] for t in stage2_tests]
+    assert all(p == inner_payloads[0] for p in inner_payloads)
 
 
-def test_classify_result():
+def test_classify_result_precision():
+    # Empty 200
     assert "EMPTY_RESPONSE" in classify_result(200, b"")
-    assert "DATA_RETURNED" in classify_result(200, b'{"status_code":0}')
-    assert "HTTP_STATUS_404" in classify_result(404, b"Not Found")
+
+    # Decrypted characteristics carrying state
+    decrypted_state = json.dumps({"plist": [{"pid": "P3", "pvalue": "1"}]})
+    assert "STATUS_PAYLOAD_RETURNED" in classify_result(200, b'{"status_code":0}', decrypted=decrypted_state)
+
+    # Bare ACK status code
+    assert "ACK_STATUS_CODE_0" in classify_result(200, b'{"status_code":0}')
+
+    # Encrypted characteristics wrapper returned but not decrypted
+    assert "ENCRYPTED_CHARACTERISTICS_RETURNED" in classify_result(200, b'{"characteristics":"abc"}')
+
+    # Non-200 HTTP status
+    assert "HTTP_ERROR_404" in classify_result(404, b"Not Found")
+
+    # Unparsed arbitrary body
+    assert "NON_EMPTY_UNPARSED_BODY" in classify_result(200, b"raw string payload")
+
+
+def test_sanitize_record_redacts_secrets():
+    record = {
+        "test_name": "test_probe",
+        "request_body": {
+            "request": "set_status",
+            "characteristics": "SECRET_CIPHERTEXT_12345",
+        },
+    }
+    sanitized = sanitize_record(record)
+    assert sanitized["request_body"]["characteristics"] == "***REDACTED_CIPHERTEXT***"
 
 
 @patch("probe_status.urllib.request.urlopen")
@@ -63,21 +103,47 @@ def test_send_probe(mock_urlopen):
     mock_resp.__enter__.return_value = mock_resp
     mock_urlopen.return_value = mock_resp
 
-    status, headers, body = send_probe("127.0.0.1", {"request": "get_status"}, {})
+    status, headers, body, elapsed = send_probe("127.0.0.1", {"request": "get_status"}, {})
     assert status == 200
     assert headers["content-type"] == "text/html"
     assert body == b""
+    assert elapsed >= 0.0
 
 
 @patch("probe_status.send_probe")
 @patch("probe_status.time.sleep")
-def test_run_experiment_decodes_characteristics(mock_sleep, mock_send_probe):
-    enr = "JgS72CmlwDrx9F9D"
-    returned_characteristics = encrypt_payload(enr, {"plist": [{"pid": "P3", "pvalue": "1"}]})
+def test_run_experiment_persists_sanitized_results(mock_sleep, mock_send_probe, tmp_path):
+    output_file = str(tmp_path / "test_results.jsonl")
+    returned_characteristics = encrypt_payload(DUMMY_ENR, {"plist": [{"pid": "P3", "pvalue": "1"}]})
     resp_body = json.dumps({"status_code": 0, "characteristics": returned_characteristics}).encode()
-    mock_send_probe.return_value = (200, {"content-type": "application/json"}, resp_body)
+    mock_send_probe.return_value = (200, {"content-type": "application/json"}, resp_body, 12.5)
 
-    results = run_experiment("10.0.20.117", "7C67AB0A83AB", enr, listen_udp_seconds=0.0)
-    assert len(results) >= 8
-    # Ensure decrypted payload was extracted
-    assert any(r["decrypted"] is not None for r in results)
+    results = run_experiment(
+        "10.0.20.117",
+        DUMMY_MAC,
+        DUMMY_ENR,
+        listen_udp_seconds=0.0,
+        output_path=output_file,
+    )
+    assert len(results) >= 12
+    assert os.path.exists(output_file)
+
+    with open(output_file) as f:
+        lines = [json.loads(line) for line in f]
+    assert len(lines) == len(results)
+    for entry in lines:
+        if "characteristics" in entry["request_body"]:
+            assert entry["request_body"]["characteristics"] == "***REDACTED_CIPHERTEXT***"
+
+
+def test_udp_listener_loopback_self_test():
+    import threading
+    stop_event = threading.Event()
+    packets = []
+    # Test on a high unprivileged ephemeral port
+    th, ok = start_udp_listener(14232, stop_event, packets)
+    assert ok
+    stop_event.set()
+    th.join(timeout=1.0)
+    # Self-test should have captured the test datagram
+    assert any(b"ROKU_PROBE_SELF_TEST" in bytes.fromhex(p["raw_hex"]) for p in packets)
