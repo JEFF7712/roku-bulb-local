@@ -99,13 +99,34 @@ This script executes a 5-step controlled experiment:
 4. **Passive LAN event listener & capture**: Pre-flight loopback validates and listens on UDP port 3232 (status broadcasts), 1025 (discovery), and 22223.
 5. **Sanitized structured logging**: Saves sanitized results (redacting keys/ciphertext) with precise classifications (`EMPTY_RESPONSE`, `STATUS_PAYLOAD_RETURNED`, `ACK_STATUS_CODE`, `HTTP_ERROR`, `TIMEOUT`) to `captures/probe_results.jsonl`.
 
-### Auxiliary packet capture on bulb VLAN
+### Empirical hardware test results (verified 2026-10-25)
 
-For full Layer 2 visibility (including capturing packets emitted by the bulb when toggled via the official Roku app), run `tcpdump` on the same subnet:
+Tested against live bulb `10.0.20.117` (BC1000X / RK_BA19C, fw `1.1.1.15`):
 
-```bash
-sudo tcpdump -ni <iface> -s 0 -w captures/roku-probe.pcap 'udp and (port 1025 or port 3232 or port 22223)'
-```
+| Idx | Stage | Test Name | Result Classification | Duration |
+|:---:|:---:|---|---|:---:|
+| 1 | 1 | `positive_control_brightness_step` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 686.0 ms |
+| 2 | 2 | `header_isolation_rr_omitted_mac_omitted` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 149.5 ms |
+| 3 | 2 | `header_isolation_rr_omitted_mac_present` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 149.4 ms |
+| 4 | 2 | `header_isolation_rr_0_mac_omitted` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 120.1 ms |
+| 5 | 2 | `header_isolation_rr_0_mac_present` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 119.0 ms |
+| 6 | 2 | `header_isolation_rr_1_mac_omitted` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 139.8 ms |
+| 7 | 2 | `header_isolation_rr_1_mac_present` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 119.3 ms |
+| 8 | 3 | `encrypted_read_empty_plist_wildcard` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 129.5 ms |
+| 9 | 3 | `encrypted_read_plist_empty_pvalues` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 115.7 ms |
+| 10 | 3 | `encrypted_read_zero_padded` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 143.5 ms |
+| 11 | 3 | `encrypted_read_cids_schema` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 119.5 ms |
+| 12 | 3 | `unencrypted_mlink_cids_schema` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 109.6 ms |
+| 13 | 3 | `unencrypted_get_device_info` | `EMPTY_RESPONSE (HTTP 200, 0b)` | 129.5 ms |
+| — | 4 | `udp_capture_summary` (ports 3232, 1025, 22223) | **0 packets captured** | 10.0 s |
+
+**Findings & Takeaways**:
+- The server remained completely stable: 0 timeouts, 0 connection drops, 0 crashes.
+- Response latencies for reads (`get_status` / `get_device_info`) were consistently ~110–150 ms, whereas write commands (`set_status`) took ~680 ms due to hardware LED PWM transitions.
+- Every read query returned `HTTP 200 OK` with `Transfer-Encoding: chunked` and 0-byte body across all 6 header permutations and payload variations.
+- No local UDP notifications were broadcast to port 3232 during or after commands.
+- **Architectural Conclusion**: Port 88 on stock Roku BC1000X firmware acts purely as an asymmetric, one-way command sink. For the Home Assistant integration, optimistic MQTT state reporting remains the optimal local architecture, avoiding polling overhead while providing instantaneous response.
+
 
 
 
