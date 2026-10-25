@@ -1,69 +1,85 @@
 # roku-bulb-local
 
-Wireless conversion research: Roku RK_BA19C (rebranded Wyze) to ESPHome for fully local Home Assistant control.
+Local LAN control for Roku smart bulbs (retail `BC1000P2R`, provider key
+`RK_BA19C`, rebranded Wyze) with stock firmware. No cloud, no flashing.
 
-Status: LOCAL CONTROL WORKING (2026-09-10). `scripts/local_set.py` drives the
-bulb over LAN via TCP 88 with AES-CBC (`BULB_ENR` env). Factory-mode exploit
-shelved unless a bulb without port 88 shows up.
+Status: WORKING. `scripts/local_set.py` sends one-off commands and
+`scripts/bridge.py` exposes bulbs to Home Assistant over MQTT with
+auto-discovery. A Roku Light Strip (`RK_LS`) speaks the same protocol.
 
-## Hypothesis chain
+## How it works
 
-```text
-Roku RK_BA19C = rebranded Wyze color A19
-  -> possible shared factory-test mechanism with Wyze WLPA19CV2
-  -> UDP factory mode on port 22223 after ~17 power cycles
-  -> custom loader via hijack AP
-  -> ESPHome -> Home Assistant, 100 percent local
+These bulbs run an HTTP server on **TCP port 88** with a Wyze-compatible
+`POST /device_request` endpoint. Commands are AES-CBC encrypted with a
+per-device 16-char secret (`enr`, key = IV), PKCS7 padded, base64 encoded.
+Pids: `P3` power (1/0), `P1501` brightness (1-100), `P1502` white temp in K
+(1800-6500), `P1507` RGB hex (`FF0000`). Details in
+`docs/local-http-api.md`.
+
+The catch is `enr`: it is only issued by the Wyze cloud backing the Roku
+Smart Home app, so you capture it once per bulb and then control the bulb
+over LAN indefinitely.
+
+## Setup
+
+1. Put the bulb on your LAN and find its IP (DHCP lease, `nmap -p 88 --open <subnet>`).
+2. Capture `enr` once per bulb by MITMing the Roku Smart Home app:
+   `mitmdump -s scripts/capture_addon.py --listen-port 8080`, then open the
+   app and look at `captures/roku_api.jsonl` for the device-info response
+   containing `enr` for your bulb's MAC. (`captures/` is gitignored.)
+3. Send a test command:
+
+```bash
+uv venv .venv && uv pip install -r requirements.txt
+BULB_ENR=<16-char enr> .venv/bin/python scripts/local_set.py <ip> <mac-no-colons> P1501 50
 ```
 
-Reference: `nickdaria/wyze-bulb-color-pwned` (cloned to `/tmp/wyze-bulb-color-pwned` for study). Key facts extracted from methodology plus `ap_main.c`:
+Do not send `characteristics` as a nested JSON object instead of a string:
+it crashes the bulb's port 88 server for ~20s (it recovers on its own).
+Only send spec-shaped bodies.
 
-- Factory SSID: `ASDFGHJKLzxcvb`, PASS: `0x82562647`, channel 1
-- Hijack AP IP: `192.168.3.168/24`, serves OTA at `http://192.168.3.168:8070/wyze_iot_service.bin`
-- Trigger: `hap upgrade <url>` via UDP to port `22223`, bulb replies `upgrading` on accept
-- Entry: ~17 power cycles with <3s on-time each, 5s off between cycles. First 3-4 cycles on a provisioned bulb do a factory reset, then green fade indicates counting
-- Success signals: blue flash (factory mode), then purple (wyze-loader running, AP `wyze-loader_XXXXXX` at `http://192.168.4.1`)
-- Target SoC: ESP32-C3, 4MB flash, DIO, dual OTA slots, no secure boot on WLPA19CV2 sample
-- LED driver: BP5758D over I2C, GPIO19 data, GPIO18 clock (see upstream `src/esphome/config.yaml`)
-- Stock RK_BA19C per Roku API research: cloud only, nothing listening on TCP, OUI `7C:67:AB`, MAC without separators as `instance_id`
+## Home Assistant
 
-## Safety
+```bash
+cp scripts/bulbs.example.yaml scripts/bulbs.yaml  # gitignored, fill enr from capture
+chmod 600 scripts/bulbs.yaml
+MQTT_HOST=<broker> MQTT_USER=<user> MQTT_PASS=<pass> \
+  .venv/bin/python scripts/bridge.py --config scripts/bulbs.yaml
+```
 
-Do not probe or disassemble an energized bulb. Mains voltage on PCB. Network and wireless work only. One sacrificial bulb, rest untouched.
-
-## Phase 0 procedure (this week)
-
-1. Record bulb identity in `docs/bulb-inventory.md` (model, fw version, MAC, hardware rev).
-2. Isolate on IoT/research VLAN in OPNsense. Record IP and interface.
-3. Baseline scans from `scripts/` (nix shell provides tools):
-   `sudo nmap -sS -sV -p- <BULB_IP>`
-   `sudo nmap -sU --top-ports 200 <BULB_IP>`
-4. Capture per action with tcpdump:
-   `sudo tcpdump -ni <iface> host <BULB_IP> -w captures/<action>.pcap`
-   Actions: power on, power off, brightness, color, CCT, factory reset, pairing.
-5. Look for LAN broadcasts, multicast, UDP discovery, provisioning frames.
-6. Factory-mode detection experiment: run hijack AP nearby (ESP32-S3 or Linux hostapd, see `docs/factory-mode-detection.md`), power cycle sacrificial bulb per sequence, run `scripts/detect_factory_mode.py` in listen-only mode first. Do not send `hap upgrade` until broadcast behavior is confirmed and logged.
-
-Decision points:
-
-- Best: RK_BA19C probes for `ASDFGHJKLzxcvb` or broadcasts on UDP 22223. Adapt loader and ESPHome config next.
-- Middle: factory mode exists with different IDs or packet layout. Real RE project, upstream code is the reference implementation.
-- Worst: different hardware entirely. Drop to PCB and firmware layer (Ghidra, partition table at 0x8000, OTA_0 at 0x10000).
+HA discovers each bulb automatically. See `docs/ha-bridge.md` for full-time
+deployment, and `scripts/bulbs.example.yaml` for the config format.
 
 ## Layout
 
-- `docs/bulb-inventory.md`: your bulbs, fill in before any test.
-- `docs/factory-mode-detection.md`: exact power cycle script and what to log.
-- `docs/wyze-reference.md`: pins, constants, and log signatures worth grepping.
-- `scripts/detect_factory_mode.py`: passive UDP 22223 listener plus WiFi probe log helper. Stdlib only.
+- `scripts/local_set.py`: one-off encrypted command. Secret via `BULB_ENR` env.
+- `scripts/bridge.py`: MQTT bridge with HA discovery. Config in `bulbs.yaml` (gitignored).
+- `scripts/capture_addon.py`: mitmproxy addon that logs app traffic to find `enr`.
+- `scripts/detect_factory_mode.py`: passive UDP 22223 listener for factory-mode research.
 - `scripts/lab-scan.sh`: baseline nmap plus tcpdump wrappers.
-- `shell.nix`: ephemeral tools (`nmap`, `wireshark`, `esptool`, `python3`).
-- `captures/`: gitignored pcaps.
+- `docs/local-http-api.md`: protocol reference and crash warning.
+- `docs/ha-bridge.md`: bridge runbook.
+- `docs/bulb-inventory.md`: template for recording your bulbs (example values only).
+- `docs/factory-mode-detection.md`, `docs/wyze-reference.md`: factory-flash research notes.
+- `tests/test_bridge.py`: bridge unit tests (`uv run --with pytest` or `.venv/bin/python -m pytest tests/`).
 
-## Upstream to read before touching the bulb
+## Research background
 
-- `/tmp/wyze-bulb-color-pwned/docs/METHODOLOGY.md`
-- `/tmp/wyze-bulb-color-pwned/src/wyze-hijack-ap/main/ap_main.c`
-- `/tmp/wyze-bulb-color-pwned/src/wyze-loader/README.md` (endpoints, backup flow)
-- `/tmp/wyze-bulb-color-pwned/src/esphome/config.yaml`
-- Roku cloud API notes: outbound only, Wyze `set_mesh_property` pids P3, P1501, P1502, P1507
+This started as a wireless-conversion project: Roku RK_BA19C as a rebranded
+Wyze color A19, possibly sharing the WLPA19CV2 factory-test mechanism (UDP
+port 22223 after ~17 power cycles, hijack AP, custom loader, ESPHome). That
+path is shelved: the stock firmware already accepts local commands, which
+gives fully local control with zero flash risk. The factory-mode notes stay
+for anyone whose bulb or firmware lacks port 88.
+
+Reference: `nickdaria/wyze-bulb-color-pwned` (Wyze WLPA19CV2 loader plus
+ESPHome config). Key constants are summarized in `docs/wyze-reference.md`.
+
+## Safety
+
+Do not probe or disassemble an energized bulb. Mains voltage on PCB. Network
+and wireless work only.
+
+## License
+
+MIT. See `LICENSE`.

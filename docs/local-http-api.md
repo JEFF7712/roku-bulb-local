@@ -56,7 +56,7 @@ Wyze login will not list it. Retrieval path:
    to capture the Wyze `access_token` (and any device-info responses, which may
    already contain `enr`).
 2. Call the Wyze device-info endpoint with that token plus Roku app headers
-   (`app_ver com.roku.ios.rokuhome___3.6.0.2`) and read `enr` for MAC 7C67ABAABBCC.
+   (`app_ver com.roku.ios.rokuhome___3.6.0.2`) and read `enr` for your bulb's MAC.
 3. Encrypt locally with `uv run` plus `pycryptodome`, POST to port 88, verify
    with a no-op read or a single brightness set while watching the bulb.
 

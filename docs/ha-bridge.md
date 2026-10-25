@@ -1,7 +1,7 @@
 # HA bridge (`scripts/bridge.py`)
 
-MQTT bridge with Home Assistant discovery. Verified end to end 2026-09-10
-against Desk Lamp through a local broker: MQTT set → encrypted local
+MQTT bridge with Home Assistant discovery. Verified end to end against a
+BC1000P2R bulb through a local broker: MQTT set → encrypted local
 command → bulb, state plus retained discovery published.
 
 ## Run
@@ -13,35 +13,49 @@ MQTT_HOST=<broker> MQTT_PORT=1883 MQTT_USER=<user> MQTT_PASS=<pass> \
   python3 scripts/bridge.py --config scripts/bulbs.yaml
 ```
 
-Needs `pyyaml`, `paho-mqtt`, `pycryptodome`
-(`nix-shell -p 'python3.withPackages (ps: [ps.pyyaml ps.paho-mqtt ps.pycryptodome])'`).
+Needs `pyyaml`, `paho-mqtt`, `pycryptodome` (see `requirements.txt`):
 
-HA picks up `Desk Lamp` automatically via discovery (`homeassistant/light/...`).
+```bash
+uv venv .venv && uv pip install -r requirements.txt
+```
+
+HA picks up each bulb automatically via discovery (`homeassistant/light/...`).
 No HA config changes. Entities support on/off, brightness, color temp
 (1800-6500 K), RGB. Optimistic mode: app or physical changes do not sync
 back (local `get_status` returns nothing).
 
-## Production deploy (not done yet)
+## Running it full time
 
-Bridge needs broker credentials. Two options:
+The bridge needs to stay up alongside your MQTT broker. On any always-on
+Linux host:
 
-1. New `roku-bridge` user in `flake/modules/adguard-netbird-appliance.nix`
-   mosquitto ACL (`readwrite homeassistant/#`, `readwrite roku/#`), password
-   via the existing SOPS plus CI secret pipeline. Shared infra change,
-   needs owner deploy through the homelab repo workflow.
-2. Reuse an existing broker user and run the bridge as a systemd user
-   service on an always-on host with `bulbs.yaml` deployed alongside.
+1. Create a dedicated broker user for the bridge with read/write access to
+   `homeassistant/#` and `roku/#` (topic prefix is configurable via
+   `--prefix`).
+2. Deploy `bulbs.yaml` (mode 600) next to the checkout.
+3. Run the bridge under your process supervisor. A minimal systemd user unit:
 
-Tokens in `captures/roku_api.jsonl` expire. The bridge itself is fully
+```ini
+[Unit]
+Description=Roku bulb MQTT bridge
+After=network-online.target
+
+[Service]
+ExecStart=%h/roku-bulb-local/.venv/bin/python %h/roku-bulb-local/scripts/bridge.py --config %h/roku-bulb-local/scripts/bulbs.yaml
+Environment=MQTT_HOST=<broker> MQTT_USER=<user> MQTT_PASS=<pass>
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+Check the logs for one `discovery + subscribe` line per bulb.
+
+Tokens captured from the app expire. The bridge itself is fully
 local after discovery; only verification reads use cloud.
 
 ## Adding a bulb later
 
-1. Append `{"name","mac","ip","enr"}` to `ROKU_BRIDGE_BULBS_JSON` and
-   re-play `deploy_zigbee_gateway`. Verified working for a second device
-   class: Light Strip `RK_LS` speaks the same `:88` protocol
-   and pids as the `RK_BA19C` bulbs.
-2. Secret content changes do not restart services on their own. After
-   deploy: `sudo systemctl restart roku-bridge-secrets roku-bridge`.
-   Check `journalctl -u roku-bridge` for one `discovery + subscribe` line
-   per bulb.
+Append `{"name", "mac", "ip", "enr"}` to `bulbs.yaml` and restart the
+bridge. Verified working for a second device class: a Roku Light Strip
+(`RK_LS`) speaks the same `:88` protocol and pids as the `RK_BA19C` bulbs.
