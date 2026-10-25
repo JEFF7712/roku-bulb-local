@@ -112,23 +112,6 @@ factory-mode path in `docs/factory-mode-detection.md`.
 - `docs/factory-mode-detection.md`, `docs/wyze-reference.md`: factory-flash research notes.
 - `tests/test_bridge.py`: bridge unit tests (`uv run --with pytest` or `.venv/bin/python -m pytest tests/`).
 
-## Research background
-
-This started as a wireless-conversion project: Roku RK_BA19C as a rebranded
-Wyze color A19, possibly sharing the WLPA19CV2 factory-test mechanism (UDP
-port 22223 after ~17 power cycles, hijack AP, custom loader, ESPHome). That
-path is shelved: the stock firmware already accepts local commands, which
-gives fully local control with zero flash risk. The factory-mode notes stay
-for anyone whose bulb or firmware lacks port 88.
-
-Reference: `nickdaria/wyze-bulb-color-pwned` (Wyze WLPA19CV2 loader plus
-ESPHome config). Key constants are summarized in `docs/wyze-reference.md`.
-
-## Safety
-
-Do not probe or disassemble an energized bulb. Mains voltage on PCB. Network
-and wireless work only.
-
 ## License
 
 MIT. See `LICENSE`.
