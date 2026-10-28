@@ -178,8 +178,6 @@ def run(
     user: str,
     password: str,
 ) -> int:
-    import os
-
     import paho.mqtt.client as mqtt
 
     with open(config_path, encoding="utf-8") as f:
